@@ -3,8 +3,9 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException
-from mysql.connector.errors import IntegrityError
 from selenium.common.exceptions import TimeoutException
+
+from mysql.connector.errors import IntegrityError
 import mysql.connector
 import time
 import thread
@@ -28,7 +29,12 @@ class Page:
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
-        self.driver = webdriver.Chrome(chrome_options=chrome_options)
+        cap = webdriver.DesiredCapabilities.CHROME
+        cap.setdefault('chromeOptions', {'args': ['--headless', '--disable-gpu']})
+        cap.setdefault('prefs', {"profile.managed_default_content_settings.images": 2})
+        self.driver = webdriver.Remote("http://localhost:4444/wd/hub", cap)
+        # self.driver = webdriver.Chrome(chrome_options=chrome_options)
+        # self.driver = webdriver.PhantomJS()
         self.driver.set_page_load_timeout(5)
         try:
             self.driver.get(self.url)
@@ -58,7 +64,7 @@ class Page:
         pagebt.click()
 
 
-def insertcommentbean(comment: WebElement, commentbean: Commentbean):
+def getcommentbean(comment: WebElement, commentbean: Commentbean):
     commentbean.comment_id = str(comment.get_attribute("data-id"))
     userdiv = comment.find_element(By.XPATH, "./div[2]/div[1]/div[1]/a[1]")
     commentbean.username = str(userdiv.text)
@@ -66,7 +72,20 @@ def insertcommentbean(comment: WebElement, commentbean: Commentbean):
     commentcontent = str(comment.find_element(By.XPATH, "./div[2]/div[1]/div[1]").text)
     commentbean.commentcontent = commentcontent[commentcontent.index(commentbean.username) + len(commentbean.username) + 1:]
     commentbean.commenttime = str(comment.find_element(By.XPATH, "./div[2]/div[last()]/div[1]").text)
-    insertdb(commentbean)
+
+
+class Manalyzediv(threading.Thread):
+    def __init__(self, commentdiv, commentbean):
+        threading.Thread.__init__(self)
+        self.commentdiv = commentdiv
+        self.commentbean = commentbean
+
+    def run(self):
+        getcommentbean(self.commentdiv, self.commentbean)
+        global lock
+        lock.acquire()
+        insertdb(self.commentbean)
+        lock.release()
 
 
 def capturecomments(songid: str, pagebegin: int, pagecount: int):
@@ -80,19 +99,24 @@ def capturecomments(songid: str, pagebegin: int, pagecount: int):
                 commentbean = Commentbean()
                 commentbean.songname = page.title
                 commentbean.songid = songid
-                insertcommentbean(page.comment_array[len(page.comment_array) - 1], commentbean)
+                getcommentbean(page.comment_array[len(page.comment_array) - 1], commentbean)
+                insertdb(commentbean)
                 break
             except (StaleElementReferenceException, NoSuchElementException):
-                print("comments are loading...")
+                # print("comments are loading...")
                 time.sleep(0.3)
                 page.getcommentdiv()
                 continue
-        for comment in page.comment_array:
+        for i in range(len(page.comment_array)):
             commentbean = Commentbean()
             commentbean.songname = page.title
             commentbean.songid = songid
-            insertcommentbean(comment, commentbean)
+            getcommentbean(page.comment_array[i], commentbean)
+            insertdb(commentbean)
+        global lock
+        lock.acquire()
         conn.commit()
+        lock.release()
         print("page " + str(page.current_page) + " is done. start next page...")
         islastpage = "js-disabled" in page.nextbt.get_attribute("class")
         if islastpage or page.current_page > pagebegin + pagecount:
@@ -103,21 +127,25 @@ def capturecomments(songid: str, pagebegin: int, pagecount: int):
 
 
 def insertdb(commentbean: Commentbean):
-    global cursor
+    # print("insert...")
+    global cursor, lock
     try:
+        lock.acquire()
+        # print("get lock")
         cursor.execute(insert_statement, (commentbean.comment_id, commentbean.songid, commentbean.songname,
                                           commentbean.userhome, commentbean.username, commentbean.commentcontent,
                                           commentbean.commenttime))
     except IntegrityError:
         pass
+    finally:
+        # print("release lock")
+        lock.release()
+    # print("complete...")
 
 
 def test():
-    global lock, done
-    lock.acquire()
-    done += 1
-    print("done: ", done)
-    lock.release()
+    while True:
+        print("aaa")
 
 
 conn = mysql.connector.connect(user='root', database='netease_music', password='root', use_unicode=True)
@@ -132,7 +160,13 @@ lock = threading.Lock()
 done = 0
 
 # capturecomments('85491', 1 + 50 * 0, 50)
-capturecomments('85491', 1, 100)
+for i in range(25):
+    thread.start_new_thread(capturecomments, ('85491', 1 + 50 * i, 50))
+    time.sleep(4)
+while True:
+    time.sleep(100)
+
+# thread.start_new_thread(test, ())
 conn.commit()
 conn.close()
 # while True:
