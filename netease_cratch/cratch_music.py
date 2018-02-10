@@ -1,15 +1,20 @@
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException
 from selenium.common.exceptions import TimeoutException
+from lxml import etree
+from io import StringIO
 
 from mysql.connector.errors import IntegrityError
 import mysql.connector
 import time
 import thread
 import threading
+
 
 
 class Commentbean:
@@ -19,7 +24,10 @@ class Commentbean:
 class Page:
     url = ""
     comment_count, title, current_page = 0, 0, 0
-    driver, iframe, comment_box, comment_array, nextbt = 0, 0, 0, 0, 0
+    driver, iframe, nextbt = 0, 0, 0
+    parser = etree.HTMLParser()
+    comment_array, comment_box = 0, 0
+    tree = 0
 
     def __init__(self, url: str):
         self.url = url
@@ -35,7 +43,7 @@ class Page:
         self.driver = webdriver.Remote("http://localhost:4444/wd/hub", cap)
         # self.driver = webdriver.Chrome(chrome_options=chrome_options)
         # self.driver = webdriver.PhantomJS()
-        self.driver.set_page_load_timeout(5)
+        self.driver.set_page_load_timeout(10)
         try:
             self.driver.get(self.url)
         except TimeoutException:
@@ -44,69 +52,54 @@ class Page:
         time.sleep(4)
         # self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight)");
 
-        self.title = self.driver.find_element_by_xpath('/html[1]/head[1]/title[1]').get_attribute("textContent")
         self.driver.switch_to.default_content()
+        self.tree = etree.fromstring(self.driver.page_source, self.parser)
+        self.title = self.tree.xpath("/html[1]/head[1]/title[1]")[0].text
         self.iframe = self.driver.find_element_by_xpath('//iframe[@id="g_iframe"]')
-        self.driver.switch_to.frame(self.iframe)
-        self.comment_box = self.driver.find_element_by_xpath(".//div[@id='comment-box']")
 
-    def getcommentdiv(self):
-        self.comment_array = self.comment_box.find_elements(By.XPATH, ".//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div")
-        self.nextbt = self.comment_box.find_element(By.XPATH, ".//div[@class='m-cmmt']/div[3]/div[1]/a[last()]")
-        self.comment_count = self.comment_box.find_element_by_xpath("./div[1]/div[1]/span[1]/span[1]").text
-        self.current_page = int(self.comment_box.find_element(By.XPATH,
-                                               ".//div[@class='m-cmmt']/div[3]/div[1]/a[contains(@class,'js-selected')]").text)
+        self.driver.switch_to.frame(self.iframe)
+        self.tree = etree.fromstring(self.driver.page_source, self.parser)
+        self.comment_count = self.tree.xpath(".//div[@id='comment-box']/div[1]/div[1]/span[1]/span[1]")[0].text#获取值是用什么方法？
+        self.nextbt = self.driver.find_element_by_xpath(
+            ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[last()]")
+
+    def loadcomment(self):
+        self.tree = etree.fromstring(self.driver.page_source, self.parser)
+        self.comment_array = self.tree.xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div")#获取列表可以这样获取吗？
+        self.current_page = int(self.tree.xpath(
+            ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[contains(@class,'js-selected')]")[0].text)
 
     def jump(self, pageindex):
-        pagebt = self.comment_box.find_element(By.XPATH, ".//div[@class='m-cmmt']/div[3]/div[1]/a[3]")
+        pagebt = self.driver.find_element_by_xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[3]")
         btid = str(pagebt.get_attribute('id'))
         self.driver.execute_script("document.getElementById(\"" + btid + "\").innerHTML = \"" + str(pageindex) + "\";")
         pagebt.click()
 
 
-def getcommentbean(comment: WebElement, commentbean: Commentbean):
-    commentbean.comment_id = str(comment.get_attribute("data-id"))
-    userdiv = comment.find_element(By.XPATH, "./div[2]/div[1]/div[1]/a[1]")
-    commentbean.username = str(userdiv.text)
-    commentbean.userhome = str(userdiv.get_attribute("href"))
-    commentcontent = str(comment.find_element(By.XPATH, "./div[2]/div[1]/div[1]").text)
-    commentbean.commentcontent = commentcontent[commentcontent.index(commentbean.username) + len(commentbean.username) + 1:]
-    commentbean.commenttime = str(comment.find_element(By.XPATH, "./div[2]/div[last()]/div[1]").text)
-
-
-class Manalyzediv(threading.Thread):
-    def __init__(self, commentdiv, commentbean):
-        threading.Thread.__init__(self)
-        self.commentdiv = commentdiv
-        self.commentbean = commentbean
-
-    def run(self):
-        getcommentbean(self.commentdiv, self.commentbean)
-        global lock
-        lock.acquire()
-        insertdb(self.commentbean)
-        lock.release()
+def getcommentbean(comment, commentbean: Commentbean):
+    commentbean.comment_id = str(comment.get("data-id"))
+    userdiv = comment.xpath("./div[2]/div[1]/div[1]/a[1]")
+    commentbean.username = str(userdiv[0].text)
+    commentbean.userhome = str(userdiv[0].get("href"))
+    commentbean.commentcontent = str(comment.xpath("./div[2]/div[1]/div[1]/a[1]")[0].tail)[1:]#查找子节点可以这样找吗？
+    commentbean.commenttime = str(comment.xpath("./div[2]/div[last()]/div[1]")[0].text)
 
 
 def capturecomments(songid: str, pagebegin: int, pagecount: int):
     page = Page("https://music.163.com/#/song?id=" + songid)
     page.getpage()
-    page.getcommentdiv()
     page.jump(pagebegin)
     while True:
-        while True:
-            try:
-                commentbean = Commentbean()
-                commentbean.songname = page.title
-                commentbean.songid = songid
-                getcommentbean(page.comment_array[len(page.comment_array) - 1], commentbean)
-                insertdb(commentbean)
-                break
-            except (StaleElementReferenceException, NoSuchElementException):
-                # print("comments are loading...")
-                time.sleep(0.3)
-                page.getcommentdiv()
-                continue
+        try:
+            #判断是否加载完成
+            WebDriverWait(page.driver, 10).until(
+                expected_conditions.presence_of_element_located((By.XPATH,
+                                                                "//div[@id='comment-box']//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div[last()]/div[2]/div[1]/div[1]/a[1]")))
+        except TimeoutException:
+            print("load comments timeout")
+            page.driver.close()
+            return
+        page.loadcomment()
         for i in range(len(page.comment_array)):
             commentbean = Commentbean()
             commentbean.songname = page.title
@@ -117,9 +110,10 @@ def capturecomments(songid: str, pagebegin: int, pagecount: int):
         lock.acquire()
         conn.commit()
         lock.release()
+
         print("page " + str(page.current_page) + " is done. start next page...")
         islastpage = "js-disabled" in page.nextbt.get_attribute("class")
-        if islastpage or page.current_page > pagebegin + pagecount:
+        if islastpage or page.current_page >= pagebegin + pagecount - 1:
             print("this song is done.")
             page.driver.close()
             break
@@ -143,9 +137,23 @@ def insertdb(commentbean: Commentbean):
     # print("complete...")
 
 
-def test():
-    while True:
-        print("aaa")
+class MyThread(threading.Thread):
+    songid = 0
+    begin, count = 0, 0
+    semaphore = 0
+
+    def __init__(self, songid: str, begin: int, count: int, semaphore: threading.Semaphore):
+        threading.Thread.__init__(self)
+        self.songid = songid
+        self.begin = begin
+        self.count = count
+        self.semaphore = semaphore
+
+    def run(self):
+        self.semaphore.acquire()
+        capturecomments(self.songid, self.begin, self.count)
+        self.semaphore.release()
+
 
 
 conn = mysql.connector.connect(user='root', database='netease_music', password='root', use_unicode=True)
@@ -156,19 +164,26 @@ cursor.execute("SET character_set_connection=utf8mb4")
 
 insert_statement = ("insert into comment (commentid, songid, song, userhome, username, comments_content, time) values (%s, %s, %s, %s, %s, %s, %s)")
 # 28754103 85491
+
+
+threadcount = 10
+everycount = 100
+songid = '85491'
+
+page = Page("https://music.163.com/#/song?id=" + songid)
+page.getpage()
+pagecount = int(page.driver.find_element_by_xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[last() - 1]").text)#总页数
+page.driver.close()
+
 lock = threading.Lock()
-done = 0
+semaphore = threading.Semaphore(threadcount)
+threadlist = []
+for i in range(int((pagecount - 1) / everycount) + 1):
+    t = MyThread(songid, everycount * i + 1, everycount, semaphore)
+    t.start()
+    threadlist.append(t)
+for t in threadlist:
+    t.join()
 
-# capturecomments('85491', 1 + 50 * 0, 50)
-for i in range(25):
-    thread.start_new_thread(capturecomments, ('85491', 1 + 50 * i, 50))
-    time.sleep(4)
-while True:
-    time.sleep(100)
-
-# thread.start_new_thread(test, ())
 conn.commit()
 conn.close()
-# while True:
-#     thread.start_new_thread(test, ())
-#     # time.sleep(0.1)
