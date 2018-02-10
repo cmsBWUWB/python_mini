@@ -59,13 +59,13 @@ class Page:
 
         self.driver.switch_to.frame(self.iframe)
         self.tree = etree.fromstring(self.driver.page_source, self.parser)
-        self.comment_count = self.tree.xpath(".//div[@id='comment-box']/div[1]/div[1]/span[1]/span[1]")[0].text#获取值是用什么方法？
+        self.comment_count = self.tree.xpath(".//div[@id='comment-box']/div[1]/div[1]/span[1]/span[1]")[0].text
         self.nextbt = self.driver.find_element_by_xpath(
             ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[last()]")
 
     def loadcomment(self):
         self.tree = etree.fromstring(self.driver.page_source, self.parser)
-        self.comment_array = self.tree.xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div")#获取列表可以这样获取吗？
+        self.comment_array = self.tree.xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div")
         self.current_page = int(self.tree.xpath(
             ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[contains(@class,'js-selected')]")[0].text)
 
@@ -78,10 +78,20 @@ class Page:
 
 def getcommentbean(comment, commentbean: Commentbean):
     commentbean.comment_id = str(comment.get("data-id"))
-    userdiv = comment.xpath("./div[2]/div[1]/div[1]/a[1]")
-    commentbean.username = str(userdiv[0].text)
-    commentbean.userhome = str(userdiv[0].get("href"))
-    commentbean.commentcontent = str(comment.xpath("./div[2]/div[1]/div[1]/a[1]")[0].tail)[1:]#查找子节点可以这样找吗？
+    userdiv = comment.xpath("./div[2]/div[1]/div[1]/a[1]")[0]
+    commentbean.username = str(userdiv.text)
+    commentbean.userhome = str(userdiv.get("href"))
+    temp = userdiv
+    if temp.tail is None:
+        temp = temp.getnext()
+    commentcontent = str(temp.tail)[1:]
+    temp = temp.getnext()
+    while temp is not None:
+        commentcontent += "[emoji]"
+        if temp.tail is not None:
+            commentcontent += str(temp.tail)
+        temp = temp.getnext()
+    commentbean.commentcontent = commentcontent
     commentbean.commenttime = str(comment.xpath("./div[2]/div[last()]/div[1]")[0].text)
 
 
@@ -165,9 +175,7 @@ cursor.execute("SET character_set_connection=utf8mb4")
 insert_statement = ("insert into comment (commentid, songid, song, userhome, username, comments_content, time) values (%s, %s, %s, %s, %s, %s, %s)")
 # 28754103 85491
 
-
 threadcount = 10
-everycount = 100
 songid = '85491'
 
 page = Page("https://music.163.com/#/song?id=" + songid)
@@ -178,6 +186,7 @@ page.driver.close()
 lock = threading.Lock()
 semaphore = threading.Semaphore(threadcount)
 threadlist = []
+everycount = int(pagecount / threadcount)
 for i in range(int((pagecount - 1) / everycount) + 1):
     t = MyThread(songid, everycount * i + 1, everycount, semaphore)
     t.start()
