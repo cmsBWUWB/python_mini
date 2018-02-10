@@ -43,13 +43,13 @@ class Page:
         self.driver = webdriver.Remote("http://localhost:4444/wd/hub", cap)
         # self.driver = webdriver.Chrome(chrome_options=chrome_options)
         # self.driver = webdriver.PhantomJS()
-        self.driver.set_page_load_timeout(10)
+        self.driver.set_page_load_timeout(5)
         try:
             self.driver.get(self.url)
         except TimeoutException:
             pass
         # 等待下方播放控件自动收起
-        time.sleep(4)
+        time.sleep(5)
         # self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight)");
 
         self.driver.switch_to.default_content()
@@ -68,6 +68,8 @@ class Page:
         self.comment_array = self.tree.xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[contains(@class,'cmmts')]/div")
         self.current_page = int(self.tree.xpath(
             ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[contains(@class,'js-selected')]")[0].text)
+        self.nextbt = self.driver.find_element_by_xpath(
+            ".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[last()]")
 
     def jump(self, pageindex):
         pagebt = self.driver.find_element_by_xpath(".//div[@id='comment-box']//div[@class='m-cmmt']/div[3]/div[1]/a[3]")
@@ -173,10 +175,10 @@ cursor.execute("SET CHARACTER SET utf8mb4")
 cursor.execute("SET character_set_connection=utf8mb4")
 
 insert_statement = ("insert into comment (commentid, songid, song, userhome, username, comments_content, time) values (%s, %s, %s, %s, %s, %s, %s)")
-# 28754103 85491
+# 28754103 85491 531051217
 
-threadcount = 10
-songid = '85491'
+threadcount = 15
+songid = '531051217'
 
 page = Page("https://music.163.com/#/song?id=" + songid)
 page.getpage()
@@ -187,12 +189,17 @@ lock = threading.Lock()
 semaphore = threading.Semaphore(threadcount)
 threadlist = []
 everycount = int(pagecount / threadcount)
+# everycount = 100
+starttime = time.time()
 for i in range(int((pagecount - 1) / everycount) + 1):
     t = MyThread(songid, everycount * i + 1, everycount, semaphore)
     t.start()
     threadlist.append(t)
+    time.sleep(1)
 for t in threadlist:
     t.join()
+endtime = time.time()
+print(endtime - starttime)
 
 conn.commit()
 conn.close()
